@@ -1,0 +1,369 @@
+---
+import { getCollection } from "astro:content";
+import Base from "../../layouts/Base.astro";
+import { Image } from "astro:assets";
+import { marked } from "marked";
+
+export async function getStaticPaths() {
+  const authors = await getCollection("authors");
+  return authors.map((author) => ({
+    params: { single: author.slug || author.id },
+    props: { author },
+  }));
+}
+
+const { author } = Astro.props;
+const { title, description, image } = author.data;
+
+// Parse bio if it exists
+const htmlContent = marked.parse(author.body || "");
+
+// Fetch all posts to filter by this exact author AND remove drafts
+const allPosts = await getCollection("posts");
+const authorSlug = author.slug || author.id;
+
+const authorPosts = allPosts
+  .filter((post) => {
+    const postAuthors = post.data?.authors || [];
+    
+    // Check if the post's author array includes the exact Title, exact Slug, or a slugified version of the title
+    const isAuthorMatch = postAuthors.some(a => 
+      a === title || 
+      a === authorSlug || 
+      a.toLowerCase().replace(/\s+/g, '-') === authorSlug
+    );
+    
+    const isDraft = import.meta.env.PROD && post.data?.draft === true;
+    return isAuthorMatch && !isDraft;
+  })
+  .sort((a, b) => new Date(b.data.date || 0).getTime() - new Date(a.data.date || 0).getTime());
+
+const cleanAltText = (title: string) => {
+  if (!title) return "Blog post";
+  return title.replace(/\b(image|picture|photo|thumbnail|logo|graphic)s?\b\s*(of)?\s*/gi, '').trim() || "Blog post";
+};
+---
+
+<Base 
+  title={`${title} - Author Profile`} 
+  description={description || `Read all articles written by ${title}.`}
+  image={image}
+  schemaType="page"
+>
+  <div class="archive-container">
+    
+    <!-- Compact Author Header -->
+    <div class="compact-author-header">
+      {image && (
+        <Image src={image} alt={title} width={75} height={75} class="compact-author-avatar" loading="eager" />
+      )}
+      <div class="compact-author-info">
+        <h1 class="compact-author-title">{title}</h1>
+        {description && <p class="compact-author-bio">{description}</p>}
+        {htmlContent && <div class="compact-author-full-bio" set:html={htmlContent} />}
+      </div>
+    </div>
+
+    <!-- Recent Posts Section -->
+    {authorPosts.length > 0 && (
+      <div class="dashboard-posts-section">
+        <div class="section-heading">
+          <span class="heading-title">Latest posts by {title}</span>
+          <span class="heading-dots">···</span>
+        </div>
+        
+        <div class="archive-cards-grid">
+          {authorPosts.map((post, index) => {
+            const postCategory = post.data?.categories?.[0] || "General";
+            const categorySlug = postCategory.toLowerCase().replace(/ /g, '-');
+            const hasUpdated = !!post.data?.updatedDate;
+            const displayDate = hasUpdated ? post.data.updatedDate : post.data?.date;
+            const dateStr = displayDate ? new Date(displayDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "";
+            
+            return (
+              <article class="post-card vertical-card">
+                {post.data.image && (
+                  <div class="card-thumb">
+                    <Image 
+                      src={post.data.image} 
+                      alt={cleanAltText(post.data.title)} 
+                      width={600}
+                      height={350}
+                      loading={index < 8 ? "eager" : "lazy"} 
+                    />
+                    {post.data?.commentsCount && (
+                      <div class="comment-badge">💬 {post.data.commentsCount}</div>
+                    )}
+                  </div>
+                )}
+                <div class="card-content">
+                  <div class="card-meta-top">
+                    <!-- Added trailing slash to category URL -->
+                    <a href={`/categories/${categorySlug}/`} class="cat-link">
+                      in {postCategory}
+                    </a>
+                  </div>
+                  <!-- Added trailing slash to post URL -->
+                  <a href={`/blog/${post.slug || post.id}/`} class="title-anchor">
+                    <h3 class="card-title">{post.data.title}</h3>
+                  </a>
+                  {post.data?.description && (
+                    <p class="card-snippet">{post.data.description}</p>
+                  )}
+                  <div class="card-footer">
+                    <span class="update-tag">Updated</span>
+                    <span class="date-label">{dateStr}</span>
+                    <!-- Added trailing slash to read more link -->
+                    <a href={`/blog/${post.slug || post.id}/`} class="read-more-link">Read more</a>
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    )}
+
+  </div>
+</Base>
+
+<style is:global>
+  /* --- LAYOUT WRAPPER MATCHING ARCHIVE --- */
+  .archive-container {
+    max-width: 1000px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    box-sizing: border-box;
+  }
+
+  /* --- COMPACT AUTHOR HEADER --- */
+  .compact-author-header {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 0.75rem;
+    padding: 1.5rem 2rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+  }
+
+  .compact-author-avatar {
+    width: 75px;
+    height: 75px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid var(--border-color);
+    flex-shrink: 0;
+  }
+
+  .compact-author-info {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .compact-author-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-main);
+    margin: 0 0 0.25rem 0;
+    line-height: 1.2;
+  }
+
+  .compact-author-bio {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    margin: 0;
+    font-weight: 500;
+  }
+
+  .compact-author-full-bio {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+  }
+  .compact-author-full-bio p { margin: 0; }
+
+  /* --- SECTION HEADING --- */
+  .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px dashed var(--border-color);
+    padding-bottom: 0.4rem;
+    margin-bottom: 1rem;
+  }
+
+  .heading-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+
+  .heading-dots {
+    color: var(--text-muted);
+    letter-spacing: 2px;
+    cursor: pointer;
+  }
+
+  /* --- 4-COLUMN ARCHIVE-MATCHED GRID --- */
+  .archive-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+  }
+
+  .post-card.vertical-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 0.75rem;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    transition: border-color 0.15s ease;
+  }
+
+  .post-card.vertical-card:hover {
+    border-color: #4f46e5;
+  }
+
+  .card-thumb {
+    position: relative;
+    width: 100%;
+    height: 140px;
+    background: var(--bg-main);
+    overflow: hidden;
+  }
+
+  .card-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .comment-badge {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    padding: 0.12rem 0.4rem;
+    border-radius: 2rem;
+    font-size: 0.6rem;
+    font-weight: 600;
+    color: var(--text-main);
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+  }
+
+  .card-content {
+    padding: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    justify-content: space-between;
+    min-width: 0;
+  }
+
+  .card-meta-top {
+    margin-bottom: 0.2rem;
+  }
+
+  .cat-link {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #818cf8;
+    text-decoration: none;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .cat-link:hover {
+    text-decoration: underline;
+  }
+
+  .title-anchor {
+    text-decoration: none;
+  }
+
+  .card-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-main);
+    margin: 0 0 0.35rem 0;
+    line-height: 1.3;
+  }
+
+  .card-title:hover {
+    color: #818cf8;
+  }
+
+  .card-snippet {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: 0 0 0.75rem 0;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .card-footer {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.68rem;
+    border-top: 1px solid var(--border-color);
+    padding-top: 0.5rem;
+  }
+
+  .update-tag {
+    background: #0284c7;
+    color: #fff;
+    font-size: 0.55rem;
+    font-weight: 700;
+    padding: 0.05rem 0.25rem;
+    border-radius: 0.2rem;
+    text-transform: uppercase;
+  }
+
+  .date-label {
+    color: var(--text-muted);
+    margin-right: auto;
+  }
+
+  .read-more-link {
+    color: #818cf8;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .read-more-link:hover {
+    text-decoration: underline;
+  }
+
+  /* --- RESPONSIVE ADJUSTMENTS --- */
+  @media (max-width: 1024px) {
+    .archive-cards-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .compact-author-header {
+      flex-direction: column;
+      text-align: center;
+      padding: 1.25rem 1rem;
+      gap: 0.75rem;
+    }
+    .archive-cards-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

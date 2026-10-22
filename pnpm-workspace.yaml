@@ -1,0 +1,8 @@
+allowBuilds:
+  esbuild: true
+  pnpm: false
+  sharp: true
+  workerd: true
+  yarn: false
+minimumReleaseAgeExclude:
+  - prettier@3.8.5

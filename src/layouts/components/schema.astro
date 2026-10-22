@@ -1,0 +1,95 @@
+---
+interface Props {
+  type?: 'website' | 'article' | 'page';
+  title: string;
+  description: string;
+  url: string;
+  image?: string;
+  datePublished?: string;
+  dateModified?: string;
+}
+
+const { 
+  type = 'website', 
+  title, 
+  description, 
+  url, 
+  image = '/images/og-image.png',
+  datePublished,
+  dateModified
+} = Astro.props;
+
+const siteUrl = Astro.site || 'https://coshix.in';
+const fullImageUrl = new URL(image, siteUrl).toString();
+
+const organizationSchema = {
+  "@type": "Organization",
+  "@id": `${siteUrl}/#organization`,
+  "name": "Coshix",
+  "url": siteUrl,
+  "logo": {
+    "@type": "ImageObject",
+    "url": new URL('/images/logo.png', siteUrl).toString()
+  },
+  "sameAs": [
+    "https://github.com/itsshivaes",
+    "https://www.instagram.com/coshix.in"
+  ]
+};
+
+let primarySchema;
+
+if (type === 'website') {
+  primarySchema = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "@id": `${siteUrl}/#website`,
+    "url": siteUrl,
+    "name": "Coshix",
+    "description": description,
+    "publisher": organizationSchema,
+    "potentialAction": {
+      "@type": "SearchAction",
+      "target": `${siteUrl}/search?q={search_term_string}`,
+      "query-input": "required name=search_term_string"
+    }
+  };
+} else if (type === 'article') {
+  primarySchema = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    "mainEntityOfPage": {
+      "@type": "WebPage",
+      "@id": url
+    },
+    "headline": title,
+    "description": description,
+    "image": [fullImageUrl],
+    "datePublished": datePublished,
+    "dateModified": dateModified || datePublished,
+    "author": {
+      "@type": "Organization",
+      "name": "Coshix"
+    },
+    "publisher": {
+      "@type": "Organization",
+      "name": "Coshix",
+      "logo": {
+        "@type": "ImageObject",
+        "url": new URL('/images/logo.png', siteUrl).toString()
+      }
+    }
+  };
+} else {
+  primarySchema = {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    "url": url,
+    "name": title,
+    "description": description,
+    "publisher": organizationSchema
+  };
+}
+---
+
+<script type="application/ld+json" set:html={JSON.stringify(primarySchema)} />

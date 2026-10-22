@@ -1,0 +1,1167 @@
+---
+import { getCollection, getEntry, render } from "astro:content";
+import Base from "../../layouts/Base.astro";
+import { Image } from "astro:assets";
+
+export async function getStaticPaths() {
+  const posts = await getCollection("posts");
+  
+  // Filter out drafts from generating URLs in production
+  const validPosts = posts.filter(post => {
+    const isDraft = import.meta.env.PROD && post.data?.draft === true;
+    return !isDraft;
+  });
+
+  return validPosts.map((post) => ({
+    params: { single: post.slug || post.id },
+  }));
+}
+
+const { single } = Astro.params;
+const post = await getEntry("posts", single);
+
+if (!post) {
+  return Astro.redirect('/404');
+}
+
+// ASTRO 5 FIX: Use the standalone render function
+const { Content } = await render(post);
+
+// --- HELPER: Slugify URLs (Fixes spaces in Tags and Categories) ---
+const slugify = (text: string) => text.toLowerCase();
+
+// Extract Category for Breadcrumb
+const postCategory = post.data?.categories?.[0] || "General";
+const categorySlug = slugify(postCategory);
+const siteUrl = Astro.site || 'https://coshix.in';
+
+// Extract and deduplicate all tags and categories
+const rawTags = [...(post.data?.categories || []), ...(post.data?.tags || [])];
+const uniqueTags = [...new Set(rawTags)];
+
+// Read Time Calculation
+const wordCount = post.body ? post.body.split(/\s+/).length : 0;
+const readingTime = Math.ceil(wordCount / 200) || 1;
+
+// Time Ago Function for Date
+function timeAgo(dateParam: string | Date) {
+  if (!dateParam) return "";
+  const date = new Date(dateParam);
+  const now = new Date();
+  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+  let interval = seconds / 31536000;
+  if (interval >= 1) return Math.floor(interval) + " years ago";
+  interval = seconds / 2592000;
+  if (interval >= 1) return Math.floor(interval) + " months ago";
+  interval = seconds / 86400;
+  if (interval >= 1) return Math.floor(interval) + " days ago";
+  interval = seconds / 3600;
+  if (interval >= 1) return Math.floor(interval) + " hours ago";
+  interval = seconds / 60;
+  if (interval >= 1) return Math.floor(interval) + " minutes ago";
+  return "Just now";
+}
+
+const hasUpdatedDate = !!post.data?.updatedDate;
+const displayDate = hasUpdatedDate ? post.data.updatedDate : post.data?.date;
+const datePrefix = hasUpdatedDate ? "Updated: " : "";
+const timeString = displayDate ? `${datePrefix}${timeAgo(displayDate)}` : "";
+
+// Fetch Author Data safely within the component
+const allAuthors = await getCollection("authors");
+let authorData = { title: "Coshix", image: "/images/logo.png", slug: "coshix" }; 
+if (post.data?.authors && post.data.authors.length > 0) {
+  const authorName = post.data.authors[0];
+  const foundAuthor = allAuthors.find(a => 
+    a.data.title === authorName || 
+    (a.slug && a.slug === slugify(authorName)) ||
+    (a.id && a.id.startsWith(slugify(authorName)))
+  );
+
+  if (foundAuthor) {
+    authorData.title = foundAuthor.data.title;
+    authorData.slug = foundAuthor.slug || foundAuthor.id;
+    if (foundAuthor.data.image) {
+      authorData.image = typeof foundAuthor.data.image === 'object' && foundAuthor.data.image.src 
+        ? foundAuthor.data.image.src 
+        : foundAuthor.data.image;
+    }
+  } else {
+    authorData.title = authorName;
+    authorData.slug = slugify(authorName);
+  }
+}
+
+// Generate Breadcrumb Rich Result Schema
+const breadcrumbSchema = {
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    {
+      "@type": "ListItem",
+      "position": 1,
+      "name": "Home",
+      "item": siteUrl.toString()
+    },
+    {
+      "@type": "ListItem",
+      "position": 2,
+      "name": postCategory,
+      "item": `${siteUrl}/categories/${categorySlug}/`
+    },
+    {
+      "@type": "ListItem",
+      "position": 3,
+      "name": post.data?.title,
+      "item": Astro.url.href
+    }
+  ]
+};
+
+// --- DATA FETCHING FOR RELATED POSTS & SIDEBAR ---
+const allPosts = await getCollection("posts");
+
+// Filter out index pages and drafts for the sidebar/related posts
+const validPosts = allPosts.filter(p => {
+  const identifier = p.slug || p.id || "";
+  const isIndexPage = identifier.includes("index") || p.data?.title === "Posts";
+  const isDraft = import.meta.env.PROD && p.data?.draft === true;
+  return !isIndexPage && !isDraft;
+});
+
+const relatedPosts = validPosts
+  .filter(p => 
+    (p.slug || p.id) !== (post.slug || post.id) && 
+    p.data?.categories?.[0] === postCategory
+  )
+  .slice(0, 3);
+
+const sortedPosts = validPosts.sort((a, b) => {
+  const dateA = new Date(a.data?.date || 0).getTime();
+  const dateB = new Date(b.data?.date || 0).getTime();
+  return dateB - dateA;
+});
+
+const popularPosts = sortedPosts.slice(0, 5);
+
+// Update: Group Sidebar Labels by TAGS instead of Categories
+const tagMap = new Map();
+validPosts.forEach(p => {
+  const tags = p.data?.tags || [];
+  tags.forEach((tag: string) => {
+    tagMap.set(tag, (tagMap.get(tag) || 0) + 1);
+  });
+});
+
+// Sort tags by frequency so the most used tags appear first
+const allSidebarTags = Array.from(tagMap.entries())
+  .map(([name, count]) => ({ name, count }))
+  .sort((a, b) => b.count - a.count);
+
+const formatSidebarDate = (dateStr: string | Date) => {
+  if (!dateStr) return "";
+  return new Date(dateStr).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+};
+---
+
+<Base 
+  title={post.data?.title} 
+  description={post.data?.description}
+  image={post.data?.image}
+  schemaType="article"
+  datePublished={post.data?.date}
+  dateModified={post.data?.updatedDate || post.data?.date}
+>
+  <div class="blog-post-layout">
+    
+    <!-- LEFT: Main Article Area -->
+    <div class="post-page-wrapper">
+      <article class="post-card">
+        
+        <div class="post-header">
+          <!-- Hidden Schema for Google Rich Results -->
+          <script type="application/ld+json" set:html={JSON.stringify(breadcrumbSchema)} />
+
+          <!-- Visual Breadcrumb -->
+          <nav aria-label="breadcrumb" class="post-breadcrumb">
+            <a href="/">Home</a>
+            <span class="separator">/</span>
+            <a href={`/categories/${categorySlug}/`} class="current">{postCategory}</a>
+          </nav>
+          
+          <h1 class="post-title">
+            {post.data?.title}
+          </h1>
+          
+          <div class="post-meta">
+            <a href={`/authors/${authorData.slug}/`} class="meta-author-info">
+              <Image src={authorData.image} alt={authorData.title} class="author-avatar" width={36} height={36} loading="eager" />
+              <div class="author-details">
+                <span class="author-name">{authorData.title}</span>
+                <span class="meta-time">
+                  {timeString} <span class="meta-dot">&middot;</span> {readingTime} min read
+                </span>
+              </div>
+            </a>
+
+            <!-- Google Add Button -->
+            <a href="https://www.google.com/preferences/source?q=coshix.in" target="_blank" rel="noopener noreferrer" class="google-add-btn" aria-label="Add website to Google News">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 48 48">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+              </svg>
+              <span>Add</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Compact TOC Placeholder -->
+        <div id="dynamic-toc" class="toc-container">
+          <div class="toc-header" id="toc-toggle">
+            <span>Table of Contents</span>
+            <svg class="toc-arrow collapsed" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+          </div>
+          <div class="toc-content collapsed" id="toc-content">
+            <div class="toc-content-inner">
+              <ul id="toc-list" class="toc-list"></ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Main Article Content using Astro's Native Renderer -->
+        <div class="content-body">
+          <Content />
+        </div>
+
+        <!-- Hidden Related Posts Template -->
+        {relatedPosts.length > 0 && (
+          <aside id="related-posts-widget" class="related-list-widget">
+            <div class="related-heading">You may also like</div>
+            <ul class="related-list">
+              {relatedPosts.map(rp => (
+                <li>
+                  <a href={`/blog/${rp.slug || rp.id}/`} class="related-list-title">
+                    {rp.data?.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </aside>
+        )}
+
+        <!-- Post Tags / Categories Section (Clickable) -->
+        {uniqueTags.length > 0 && (
+          <div class="post-tags-section">
+            <hr class="tags-divider" />
+            <div class="tags-wrapper">
+              {uniqueTags.map((tag, index) => {
+                // Dynamically route categories vs tags using slugify
+                const isCategory = post.data?.categories?.includes(tag);
+                const tagUrl = isCategory 
+                  ? `/categories/${slugify(tag)}/` 
+                  : `/tags/${slugify(tag)}/`;
+                  
+                return (
+                  <a href={tagUrl} class={`tag-pill ${index >= 5 ? 'extra-tag' : ''}`}>
+                    {tag}
+                  </a>
+                );
+              })}
+              {uniqueTags.length > 5 && (
+                <button id="toggle-tags-btn" class="tag-toggle-btn">Show more</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div class="post-share-section">
+          <span class="share-label">Share:</span>
+          <div class="share-buttons">
+            
+            <a href={`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(Astro.url.href)}`} target="_blank" rel="noopener noreferrer" class="share-btn facebook">
+              <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+              Facebook
+            </a>
+
+            <a href={`https://api.whatsapp.com/send?text=${encodeURIComponent(post.data?.title + ' ' + Astro.url.href)}`} target="_blank" rel="noopener noreferrer" class="share-btn whatsapp">
+              <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.305 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981zm11.387-5.464c-.074-.124-.272-.198-.57-.347-.297-.149-1.758-.868-2.031-.967-.272-.099-.47-.149-.669.149-.198.297-.768.967-.941 1.165-.173.198-.347.223-.644.074-.297-.149-1.255-.462-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.297-.347.446-.521.151-.172.2-.296.3-.495.099-.198.05-.372-.025-.521-.075-.148-.669-1.611-.916-2.206-.242-.579-.487-.501-.669-.51l-.57-.01c-.198 0-.52.074-.792.372s-1.04 1.016-1.04 2.479 1.065 2.876 1.213 3.074c.149.198 2.096 3.2 5.076 4.487.709.306 1.263.489 1.694.626.712.226 1.36.194 1.872.118.571-.085 1.758-.719 2.006-1.413.248-.695.248-1.29.173-1.414z"/></svg>
+              Whatsapp
+            </a>
+
+            <a href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(post.data?.title)}&url=${encodeURIComponent(Astro.url.href)}`} target="_blank" rel="noopener noreferrer" class="share-btn twitter">
+              <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+              X / Twitter
+            </a>
+
+            <button id="copyLinkBtn" class="share-btn copy-link">
+              <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              <span id="copyText">Copy Link</span>
+            </button>
+
+          </div>
+        </div>
+
+        <section class="comments-section">
+          <h3 class="comments-title">Comments</h3>
+          <button id="load-comments-btn" class="load-comments-btn">Load Comments</button>
+          <div id="disqus_thread"></div>
+          
+          <script is:inline>
+            document.addEventListener('DOMContentLoaded', () => {
+              const loadBtn = document.getElementById('load-comments-btn');
+              if (loadBtn) {
+                loadBtn.addEventListener('click', function() {
+                  // UI feedback
+                  this.textContent = 'Loading comments...';
+                  this.style.opacity = '0.6';
+                  this.style.cursor = 'not-allowed';
+                  
+                  // Init Disqus directly on click
+                  window.disqus_config = function () {
+                    this.page.url = window.location.href;
+                    this.page.identifier = window.location.pathname;
+                  };
+                  var d = document, s = d.createElement('script');
+                  s.src = 'https://coshix.disqus.com/embed.js';
+                  s.setAttribute('data-timestamp', +new Date());
+                  
+                  // Hide button once loaded
+                  s.onload = () => { this.style.display = 'none'; };
+                  
+                  (d.head || d.body).appendChild(s);
+                });
+              }
+            });
+          </script>
+          <noscript>Please enable JavaScript to view the <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a></noscript>
+        </section>
+
+      </article>
+    </div>
+
+    <!-- RIGHT: Sidebar Feed (Popular Posts & Labels) -->
+    <aside class="sidebar-feed desktop-only">
+      
+      <!-- Popular Posts Widget -->
+      <div class="sidebar-widget">
+        <div class="section-heading">
+          <span class="heading-title">Most Recent</span>
+          <span class="heading-dots">···</span>
+        </div>
+        <div class="popular-list">
+          {popularPosts.map((p, idx) => (
+            <div class="popular-row">
+              <span class="pop-num">#{idx + 1}</span>
+              <div class="pop-details">
+                <div class="pop-submeta">
+                  {p.data?.date ? formatSidebarDate(p.data.date) : ""} — 
+                  <a href={`/categories/${slugify(p.data?.categories?.[0] || "General")}/`} class="pop-cat">
+                    {p.data?.categories?.[0] || "General"}
+                  </a>
+                </div>
+                <a href={`/blog/${p.slug || p.id}/`} class="pop-title-anchor">
+                  <h4 class="pop-post-title">{p.data?.title}</h4>
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <!-- Labels Widget -->
+      <div class="sidebar-widget">
+        <div class="section-heading">
+          <span class="heading-title">Labels</span>
+          <span class="heading-dots">···</span>
+        </div>
+        <div class="labels-grid">
+          {allSidebarTags.map((label, index) => (
+            <a 
+              href={`/tags/${slugify(label.name)}/`} 
+              class={`label-pill ${index >= 4 ? 'extra-sidebar-tag hidden' : ''}`}
+            >
+              <span class="label-name">{label.name}</span>
+              <span class="label-count">({label.count})</span>
+            </a>
+          ))}
+        </div>
+        {allSidebarTags.length > 4 && (
+          <button id="sidebar-toggle-tags-btn" class="sidebar-toggle-btn" data-extra={allSidebarTags.length - 4}>
+            Show more <span class="extra-count">(+{allSidebarTags.length - 4})</span>
+          </button>
+        )}
+      </div>
+
+    </aside>
+
+  </div>
+</Base>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    // 1. Copy Link Logic
+    const copyBtn = document.getElementById("copyLinkBtn");
+    const copyText = document.getElementById("copyText");
+    copyBtn?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        if (copyText) {
+          copyText.textContent = "Copied!";
+          setTimeout(() => copyText.textContent = "Copy Link", 2000);
+        }
+      } catch (err) {
+        console.error("Failed to copy link: ", err);
+      }
+    });
+
+    // 2. Table of Contents Generator & Smooth Toggle
+    const contentBody = document.querySelector('.content-body');
+    const headings = contentBody?.querySelectorAll('h2, h3');
+    const tocContainer = document.getElementById('dynamic-toc');
+    const tocList = document.getElementById('toc-list');
+    const tocToggle = document.getElementById('toc-toggle');
+    const tocContent = document.getElementById('toc-content');
+    const tocArrow = document.querySelector('.toc-arrow');
+
+    if (headings && headings.length > 1 && tocContainer && tocList) {
+      headings.forEach((heading, idx) => {
+        if (!heading.id) heading.id = 'heading-' + idx;
+        const li = document.createElement('li');
+        li.className = heading.tagName.toLowerCase() === 'h3' ? 'toc-h3' : 'toc-h2';
+        const a = document.createElement('a');
+        a.href = '#' + heading.id;
+        a.textContent = heading.textContent;
+        
+        // Smooth scroll listener for TOC links
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          heading.scrollIntoView({ behavior: 'smooth' });
+          history.pushState(null, null, '#' + heading.id); 
+        });
+
+        li.appendChild(a);
+        tocList.appendChild(li);
+      });
+      contentBody.insertBefore(tocContainer, contentBody.firstChild);
+      tocContainer.style.display = 'block';
+
+      tocToggle?.addEventListener('click', () => {
+        tocContent?.classList.toggle('collapsed');
+        tocArrow?.classList.toggle('collapsed');
+      });
+    }
+
+    // 3. Middle Insertion: "You May Also Like"
+    const paragraphs = Array.from(contentBody?.querySelectorAll('p') || []);
+    const relatedWidget = document.getElementById('related-posts-widget');
+    
+    if (relatedWidget) {
+      if (paragraphs.length > 3) {
+        const middleIndex = Math.floor(paragraphs.length / 2);
+        paragraphs[middleIndex].after(relatedWidget);
+      } else {
+        contentBody.appendChild(relatedWidget);
+      }
+      relatedWidget.style.display = 'block';
+    }
+
+    // 4. Mac OS Style Code Blocks Wrapper & Syntax Marker
+    const codeBlocks = contentBody?.querySelectorAll('pre');
+    codeBlocks?.forEach(pre => {
+      const codeElement = pre.querySelector('code');
+      if (!codeElement) return;
+
+      let html = codeElement.innerHTML;
+      html = html.replace(/\[hl:blue\](.*?)\[\/hl\]/g, '<span class="code-hl blue">$1</span>');
+      html = html.replace(/\[hl:red\](.*?)\[\/hl\]/g, '<span class="code-hl red">$1</span>');
+      html = html.replace(/\[hl:green\](.*?)\[\/hl\]/g, '<span class="code-hl green">$1</span>');
+      html = html.replace(/\[ul:blue\](.*?)\[\/ul\]/g, '<span class="code-ul blue">$1</span>');
+      html = html.replace(/\[ul:red\](.*?)\[\/ul\]/g, '<span class="code-ul red">$1</span>');
+      html = html.replace(/\[ul:green\](.*?)\[\/ul\]/g, '<span class="code-ul green">$1</span>');
+      html = html.replace(/\[ul:yellow\](.*?)\[\/ul\]/g, '<span class="code-ul yellow">$1</span>');
+      html = html.replace(/\[badge:blue\](.*?)\[\/badge\]/g, '<span class="code-badge blue">$1</span>');
+      html = html.replace(/\[badge:red\](.*?)\[\/badge\]/g, '<span class="code-badge red">$1</span>');
+      codeElement.innerHTML = html;
+
+      if (pre.parentElement.classList.contains('macos-code-wrapper')) return;
+
+      let langName = 'code';
+      if (codeElement.className) {
+        const match = codeElement.className.match(/language-(\w+)/);
+        if (match) langName = match[1];
+      }
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'macos-code-wrapper';
+      const header = document.createElement('div');
+      header.className = 'macos-code-header';
+      header.innerHTML = `
+        <div class="macos-dots">
+          <span class="dot red"></span>
+          <span class="dot yellow"></span>
+          <span class="dot green"></span>
+        </div>
+        <div class="macos-lang">${langName}</div>
+      `;
+
+      pre.parentNode.insertBefore(wrapper, pre);
+      wrapper.appendChild(header);
+      wrapper.appendChild(pre);
+    });
+
+    // 5. Post Tags Show More/Less Toggle Logic
+    const toggleTagsBtn = document.getElementById('toggle-tags-btn');
+    const extraTags = document.querySelectorAll('.extra-tag');
+    if (toggleTagsBtn && extraTags.length > 0) {
+      toggleTagsBtn.addEventListener('click', () => {
+        const isHidden = extraTags[0].style.display === '' || extraTags[0].style.display === 'none';
+        if (isHidden) {
+          extraTags.forEach(tag => tag.style.display = 'inline-flex');
+          toggleTagsBtn.textContent = 'Show less';
+        } else {
+          extraTags.forEach(tag => tag.style.display = 'none');
+          toggleTagsBtn.textContent = 'Show more';
+        }
+      });
+    }
+    
+    // 6. Sidebar Tags Show More/Less Toggle Logic
+    const sidebarToggleBtn = document.getElementById('sidebar-toggle-tags-btn');
+    const extraSidebarTags = document.querySelectorAll('.extra-sidebar-tag');
+    if (sidebarToggleBtn && extraSidebarTags.length > 0) {
+      sidebarToggleBtn.addEventListener('click', () => {
+        // We look at the first element to determine current state (using classList is safer here)
+        const isHidden = extraSidebarTags[0].classList.contains('hidden');
+        const extraCount = sidebarToggleBtn.getAttribute('data-extra');
+        
+        if (isHidden) {
+          extraSidebarTags.forEach(tag => {
+            tag.classList.remove('hidden');
+            tag.style.display = 'flex';
+          });
+          sidebarToggleBtn.innerHTML = 'Show less';
+        } else {
+          extraSidebarTags.forEach(tag => {
+            tag.classList.add('hidden');
+            tag.style.display = 'none';
+          });
+          sidebarToggleBtn.innerHTML = `Show more <span class="extra-count">(+${extraCount})</span>`;
+        }
+      });
+    }
+
+    // 7. FAQ Rich Results (JSON-LD Injector)
+    const faqs = document.querySelectorAll('.faq-item');
+    if (faqs.length > 0) {
+      const faqEntities = Array.from(faqs).map(faq => {
+        const question = faq.querySelector('.faq-question')?.textContent.trim();
+        const answer = faq.querySelector('.faq-answer')?.innerHTML.trim();
+        return {
+          "@type": "Question",
+          "name": question,
+          "acceptedAnswer": {
+            "@type": "Answer",
+            "text": answer
+          }
+        };
+      });
+      const faqSchema = {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": faqEntities
+      };
+      const script = document.createElement('script');
+      script.type = 'application/ld+json';
+      script.text = JSON.stringify(faqSchema);
+      document.head.appendChild(script);
+    }
+  });
+</script>
+
+<style is:global>
+  /* Enable global smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* --- GRID LAYOUT --- */
+  .blog-post-layout {
+    display: grid;
+    grid-template-columns: 1fr 320px;
+    gap: 2rem;
+    align-items: start;
+    width: 100%;
+  }
+
+  .post-page-wrapper {
+    width: 100%;
+    min-width: 0;
+  }
+
+  /* SIDEBAR WIDGETS (Right Side) */
+  .sidebar-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    position: sticky;
+    top: 5.5rem;
+  }
+  .sidebar-widget {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  }
+  .section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.25rem;
+    border-bottom: 1px dashed var(--border-color);
+    padding-bottom: 0.4rem;
+  }
+  .heading-title {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-main);
+  }
+  .heading-dots {
+    color: var(--text-muted);
+    letter-spacing: 2px;
+    cursor: pointer;
+  }
+  .popular-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+  .popular-row {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-start;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+  }
+  .popular-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  .pop-num {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    min-width: 18px;
+  }
+  .pop-details {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+  .pop-submeta {
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pop-cat {
+    color: #4f46e5;
+    text-decoration: none;
+    font-weight: 600;
+  }
+  html.dark .pop-cat {
+    color: #818cf8;
+  }
+  .pop-title-anchor {
+    text-decoration: none;
+  }
+  .pop-post-title {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-main);
+    margin: 0;
+    line-height: 1.4;
+  }
+  .pop-post-title:hover {
+    color: #4f46e5;
+  }
+  html.dark .pop-post-title:hover {
+    color: #818cf8;
+  }
+
+  .labels-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+  }
+  .label-pill {
+    background: var(--bg-main);
+    border: 1px solid var(--border-color);
+    padding: 0.4rem 0.6rem;
+    border-radius: 0.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    text-decoration: none;
+    font-size: 0.72rem;
+    transition: background 0.15s ease;
+  }
+  .label-pill.hidden {
+    display: none;
+  }
+  .label-pill:hover {
+    background: var(--sidebar-hover);
+    border-color: #4f46e5;
+  }
+  html.dark .label-pill:hover {
+    border-color: #818cf8;
+  }
+  .label-name {
+    color: var(--text-main);
+    font-weight: 500;
+  }
+  .label-count {
+    color: var(--text-muted);
+    font-size: 0.68rem;
+  }
+
+  /* Sidebar Toggle Button Style */
+  .sidebar-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    background: transparent;
+    border: none;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: #0ea5e9;
+    cursor: pointer;
+    padding: 0.5rem 0 0 0;
+    margin-top: 0.75rem;
+    transition: color 0.15s ease;
+  }
+  .sidebar-toggle-btn:hover {
+    text-decoration: underline;
+  }
+  .sidebar-toggle-btn .extra-count {
+    color: #94a3b8;
+    margin-left: 0.35rem;
+  }
+  html.dark .sidebar-toggle-btn {
+    color: #38bdf8;
+  }
+
+  /* POST CARD */
+  .post-card {
+    width: 100%;
+    background: var(--bg-card);
+    border-radius: 0.75rem;
+    padding: 2.5rem;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  .post-header {
+    margin-bottom: 2rem;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 1.5rem;
+  }
+
+  /* --- VISUAL BREADCRUMBS --- */
+  .post-breadcrumb {
+    font-size: 0.95rem;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #6b7280; 
+  }
+
+  .post-breadcrumb a { color: #6b7280; text-decoration: none; transition: color 0.2s ease; }
+  .post-breadcrumb a:hover { color: #4f46e5; }
+  .post-breadcrumb .separator { color: #9ca3af; font-size: 0.9rem; }
+  .post-breadcrumb a.current { color: #0f172a; font-weight: 500; }
+
+  html.dark .post-breadcrumb { color: #9ca3af; }
+  html.dark .post-breadcrumb a { color: #9ca3af; }
+  html.dark .post-breadcrumb a.current { color: #f3f4f6; }
+  html.dark .post-breadcrumb .separator { color: #4b5563; }
+
+  .post-title {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-main);
+    margin: 0.5rem 0 1rem 0;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    word-wrap: break-word;
+    word-break: break-word;
+  }
+
+  /* --- AUTHOR INFO & DATE / READ TIME --- */
+  .post-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 1.25rem;
+    gap: 1rem;
+    box-sizing: border-box;
+  }
+
+  .meta-author-info {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    text-decoration: none;
+    transition: opacity 0.2s ease;
+    box-sizing: border-box;
+  }
+
+  .meta-author-info:hover {
+    opacity: 0.85;
+  }
+
+  .author-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--border-color);
+  }
+
+  .author-details {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .author-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-main);
+    line-height: 1.2;
+    margin-bottom: 0.1rem;
+  }
+
+  .meta-time {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.2;
+  }
+  
+  .meta-dot {
+    margin: 0 0.2rem;
+  }
+
+  /* Google Add Button Styles */
+  .google-add-btn {
+    display: inline-flex; 
+    align-items: center; 
+    justify-content: center; 
+    gap: 0.5rem;
+    padding: 0.35rem 0.9rem; 
+    background: var(--bg-main); 
+    border: 1px solid var(--border-color);
+    border-radius: 2rem; 
+    font-size: 0.85rem; 
+    font-weight: 600; 
+    color: var(--text-main);
+    text-decoration: none; 
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    box-sizing: border-box;
+  }
+  .google-add-btn:hover { background: var(--sidebar-hover); border-color: #4f46e5; }
+  html.dark .google-add-btn { background-color: #18181b; border-color: #27272a; }
+  html.dark .google-add-btn:hover { background-color: #27272a; border-color: #3f3f46; }
+
+  /* --- COMPACT TABLE OF CONTENTS --- */
+  .toc-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem; 
+    margin-bottom: 1.5rem; 
+    display: none; 
+    overflow: hidden;
+    box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.05);
+  }
+  html.dark .toc-container { box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.2); }
+
+  .toc-header {
+    font-size: 0.95rem; 
+    font-weight: 600;
+    color: var(--text-main);
+    padding: 0.85rem 1rem; 
+    display: flex; justify-content: space-between; align-items: center;
+    cursor: pointer; user-select: none; background: var(--bg-main);
+    transition: background 0.2s ease;
+  }
+  .toc-header:hover { background: var(--sidebar-hover); }
+  .toc-arrow { transition: transform 0.3s ease; color: var(--text-muted); }
+  .toc-arrow.collapsed { transform: rotate(-180deg); }
+
+  .toc-content { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 0.3s ease-out; }
+  .toc-content.collapsed { grid-template-rows: 0fr; }
+  .toc-content-inner { overflow: hidden; min-height: 0; opacity: 1; transition: opacity 0.2s ease-out; }
+  .toc-content.collapsed .toc-content-inner { opacity: 0; }
+
+  .toc-list {
+    list-style: none; padding: 1rem; margin: 0; 
+    display: flex; flex-direction: column; gap: 0.5rem; 
+    border-top: 1px solid var(--border-color);
+  }
+  .toc-list li a { display: inline-block; text-decoration: none; transition: all 0.2s ease; color: inherit!important; }
+  .toc-h2 a { font-size: 0.85rem; font-weight: 500; color: var(--text-main); }
+  .toc-h2 a:hover { color: #4f46e5; transform: translateX(3px); }
+  .toc-h3 { padding-left: 1rem; position: relative; }
+  .toc-h3::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--border-color); border-radius: 2px; transition: background 0.2s ease; }
+  .toc-h3 a { font-size: 0.8rem !important; font-weight: 400; color: var(--text-muted) !important; }
+  .toc-h3 a:hover { color: #4f46e5 !important; transform: translateX(3px); }
+  .toc-h3:hover::before { background: #4f46e5; }
+
+  /* --- MAIN CONTENT STYLES --- */
+  .content-body { width: 100%; max-width: 100%; line-height: 1.8; color: var(--text-main); font-size: 1rem; overflow-wrap: anywhere; word-wrap: break-word; word-break: break-word; box-sizing: border-box; }
+  .content-body * { max-width: 100% !important; box-sizing: border-box !important; }
+  .content-body img, .content-body p img, .content-body figure img { display: block !important; width: 100% !important; max-width: 100% !important; height: auto !important; object-fit: contain !important; margin: 1.5rem 0 !important; border-radius: 0.5rem !important; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06); }
+  .content-body iframe { max-width: 100%; border-radius: 0.5rem; }
+  .content-body h2 { font-size: 1.5rem; font-weight: 600; color: var(--text-main); margin-top: 2.5rem; margin-bottom: 1rem; scroll-margin-top: 80px; }
+  .content-body h3 { font-size: 1.25rem; font-weight: 600; color: var(--text-main); margin-top: 1.5rem; margin-bottom: 0.75rem; scroll-margin-top: 80px; }
+  .content-body p { margin-bottom: 1.25rem; }
+  .content-body a { color: #4f46e5; text-decoration: none; text-underline-offset: 3px; font-weight: 500; transition: color 0.15s ease; }
+  .content-body a:hover { color: #3730a3; }
+  html.dark .content-body a { color: #818cf8; }
+  html.dark .content-body a:hover { color: #a5b4fc; }
+
+  /* Buttons and Tables */
+  .content-body a.md-btn { display: inline-flex; align-items: center; justify-content: center; background-color: #4f46e5; color: #ffffff !important; padding: 0.6rem 1.5rem; border-radius: 0.5rem; font-weight: 600; font-size: 0.95rem; text-decoration: none; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2); transition: all 0.2s ease; margin: 0.5rem 0.5rem 0.5rem 0; }
+  .content-body a.md-btn:hover { background-color: #3730a3; transform: translateY(-2px); box-shadow: 0 6px 8px -1px rgba(79, 70, 229, 0.3); }
+  .content-body a.md-btn-outline { background-color: transparent; color: var(--text-main) !important; border: 1px solid var(--border-color); box-shadow: none; }
+  .content-body a.md-btn-outline:hover { background-color: var(--sidebar-hover); border-color: #4f46e5; transform: translateY(-2px); }
+  .content-body table { width: 100%; display: table; table-layout: auto; border-collapse: collapse; margin: 2rem 0; border-style: hidden; box-shadow: 0 0 0 1px var(--border-color); border-radius: 0.5rem; overflow: hidden; }
+  .content-body th, .content-body td { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border-color); border-right: 1px solid var(--border-color); text-align: left; font-size: 0.95rem; }
+  .content-body th { background-color: var(--sidebar-hover); font-weight: 600; color: var(--text-main); }
+  .content-body tr:last-child td { border-bottom: none; }
+  .content-body th:last-child, .content-body td:last-child { border-right: none; }
+  .content-body tr:nth-child(even) td { background-color: rgba(0, 0, 0, 0.015); }
+  html.dark .content-body tr:nth-child(even) td { background-color: rgba(255, 255, 255, 0.02); }
+
+  /* --- MAC OS CODEBLOCK STYLES & HIGHLIGHTS --- */
+  .macos-code-wrapper { background: #f8fafc; border: 1px solid var(--border-color); border-radius: 0.5rem; margin: 1.5rem 0 !important; overflow: hidden; position: relative; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+  html.dark .macos-code-wrapper { background: #0f172a; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2); }
+  .macos-code-header { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 1rem; background: rgba(0,0,0,0.03); border-bottom: 1px solid var(--border-color); }
+  html.dark .macos-code-header { background: rgba(255,255,255,0.03); }
+  .macos-dots { display: flex; gap: 0.4rem; }
+  .macos-dots .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot.red { background: #ff5f56; } .dot.yellow { background: #ffbd2e; } .dot.green { background: #27c93f; }
+  .macos-lang { font-family: ui-monospace, monospace; font-size: 0.75rem; color: var(--text-muted); text-transform: lowercase; }
+  .macos-code-wrapper .copy-code-btn { position: absolute; top: 0.4rem; right: 0.5rem; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-muted); font-size: 0.7rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 0.35rem; cursor: pointer; transition: all 0.2s ease; box-shadow: 0 1px 2px rgba(0,0,0,0.05); z-index: 10; font-family: inherit; }
+  .macos-code-wrapper .copy-code-btn:hover { background: var(--sidebar-hover); color: var(--text-main); border-color: #818cf8; }
+  .macos-code-wrapper .copy-code-btn.copied { background: #10b981 !important; border-color: #10b981 !important; color: #ffffff !important; }
+  
+  .content-body pre { position: static !important; background: transparent !important; padding: 1.25rem !important; margin: 0 !important; border: none !important; border-radius: 0 !important; overflow-x: auto !important; max-width: 100% !important; }
+  
+  /* FIXED EXPLICIT TEXT COLOR FOR CODE BLOCKS */
+  .content-body pre code { 
+    background: transparent !important; padding: 0 !important; border: none !important; word-break: normal; white-space: pre !important; 
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
+    font-weight: 500; font-size: 0.9rem; letter-spacing: 0.2px;
+    color: #1e293b !important;
+  }
+  html.dark .content-body pre code {
+    color: #f8fafc !important;
+  }  
+
+  /* Inline Code Mark Styles */
+  .code-hl { border-radius: 2px; padding: 0 4px; color: #fff !important; }
+  .code-hl.blue { background: #0ea5e9; }
+  .code-hl.red { background: #ef4444; }
+  .code-hl.green { background: #65a30d; }
+  
+  .code-ul { border-bottom: 2px dashed; padding-bottom: 1px; }
+  .code-ul.blue { border-color: #0ea5e9; }
+  .code-ul.red { border-color: #ef4444; }
+  .code-ul.green { border-color: #65a30d; }
+  .code-ul.yellow { border-color: #d97706; }
+
+  .code-badge { font-size: 0.7em; padding: 2px 6px; border-radius: 12px; margin: 0 4px; border: 1px solid; background: transparent; vertical-align: text-top; }
+  .code-badge.blue { border-color: #0ea5e9; color: #0ea5e9 !important; }
+  .code-badge.red { border-color: #ef4444; color: #ef4444 !important; }
+
+  /* --- MIDDLE RELATED POSTS LIST WIDGET --- */
+  .related-list-widget { background: var(--bg-main); border-left: 4px solid #4f46e5; padding: 1.5rem; margin: 2.5rem 0; border-radius: 0 0.5rem 0.5rem 0; display: none; }
+  .related-heading { font-size: 1.1rem; font-weight: 700; color: var(--text-main); margin-bottom: 1rem; }
+  .related-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+  .related-list li { display: flex; align-items: flex-start; gap: 0.5rem; }
+  .related-list li::before { content: "•"; color: #4f46e5; font-weight: bold; font-size: 1.2rem; line-height: 1; }
+  .related-list-title { font-size: 0.95rem; font-weight: 600; color: var(--text-main); text-decoration: none; line-height: 1.4; transition: color 0.15s ease; }
+  .related-list-title:hover { color: #4f46e5; }
+
+  /* --- TAGS PILL SECTION (CLICKABLE) --- */
+  .post-tags-section { margin-top: 3rem; }
+  .tags-divider { border: 0; border-top: 1px dashed var(--border-color); margin-bottom: 1.5rem; }
+  .tags-wrapper { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
+  .tag-pill { display: inline-flex; align-items: center; justify-content: center; padding: 0.35rem 1rem; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 9999px; font-size: 0.85rem; font-weight: 500; color: #0369a1; text-decoration: none; cursor: pointer; user-select: none; transition: all 0.2s ease; }
+  .tag-pill:hover { background: #f0f9ff; border-color: #bae6fd; color: #0284c7; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+  .tag-toggle-btn { display: inline-flex; background: transparent; border: none; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); cursor: pointer; padding: 0.35rem 0.5rem; transition: color 0.2s; }
+  .tag-toggle-btn:hover { color: var(--text-main); text-decoration: underline; }
+  .extra-tag { display: none; }
+  html.dark .tag-pill { background: transparent; border-color: #27272a; color: #38bdf8; }
+  html.dark .tag-pill:hover { background: rgba(56, 189, 248, 0.1); border-color: #38bdf8; color: #7dd3fc; }
+
+  /* --- NOTE BLOCKS / ALERTS --- */
+  .content-body .alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.85rem;
+    padding: 1rem 1.25rem;
+    border-radius: 0.5rem;
+    margin: 1.5rem 0;
+    font-size: 0.925rem;
+    line-height: 1.6;
+    border: 1px solid transparent;
+  }
+
+  .content-body .alert::before {
+    content: "";
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    margin-top: 2px;
+    background-repeat: no-repeat;
+    background-size: contain;
+    background-position: center;
+  }
+
+  .content-body .alert strong,
+  .content-body .alert .alert-title {
+    font-weight: 700;
+    margin-right: 0.35rem;
+    white-space: nowrap; 
+  }
+
+  .content-body .alert.info { background: #f0f9ff; border-color: #bae6fd; color: #0369a1; }
+  .content-body .alert.info::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%230284c7' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z'/%3E%3C/svg%3E"); }
+  
+  .content-body .alert.warning { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+  .content-body .alert.warning::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23d97706' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z'/%3E%3C/svg%3E"); }
+  
+  .content-body .alert.success { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
+  .content-body .alert.success::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2316a34a' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'/%3E%3C/svg%3E"); }
+  
+  .content-body .alert.error { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+  .content-body .alert.error::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23dc2626' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z'/%3E%3C/svg%3E"); }
+  
+  .content-body .alert.tip { background: #fefce8; border-color: #fef08a; color: #854d0e; }
+  .content-body .alert.tip::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%23ca8a04' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z'/%3E%3C/svg%3E"); }
+  
+  .content-body .alert.outline { background: transparent; border: 1px solid; }
+  .content-body .alert.info.outline { border-color: #0ea5e9; color: #0ea5e9; }
+  .content-body .alert.warning.outline { border-color: #f59e0b; color: #f59e0b; }
+  .content-body .alert.error.outline { border-color: #ef4444; color: #ef4444; }
+  .content-body .alert.success.outline { border-color: #22c55e; color: #22c55e; }
+  .content-body .alert.tip.outline { border-color: #eab308; color: #eab308; }
+  
+  html.dark .content-body .alert.info:not(.outline) { background: rgba(2, 132, 199, 0.1); border-color: rgba(2, 132, 199, 0.25); color: #38bdf8; }
+  html.dark .content-body .alert.warning:not(.outline) { background: rgba(217, 119, 6, 0.1); border-color: rgba(217, 119, 6, 0.25); color: #fcd34d; }
+  html.dark .content-body .alert.success:not(.outline) { background: rgba(22, 163, 74, 0.1); border-color: rgba(22, 163, 74, 0.25); color: #4ade80; }
+  html.dark .content-body .alert.error:not(.outline) { background: rgba(220, 38, 38, 0.1); border-color: rgba(220, 38, 38, 0.25); color: #f87171; }
+  html.dark .content-body .alert.tip:not(.outline) { background: rgba(202, 138, 4, 0.1); border-color: rgba(202, 138, 4, 0.25); color: #fde047; }
+
+  /* --- FAQ ACCORDION --- */
+  .content-body .faq-container { margin: 2rem 0; border: 1px solid var(--border-color); border-radius: 0.5rem; overflow: hidden; }
+  .content-body .faq-item { border-bottom: 1px solid var(--border-color); }
+  .content-body .faq-item:last-child { border-bottom: none; }
+  .content-body .faq-question { padding: 1rem 1.25rem; font-weight: 600; color: var(--text-main); background: transparent; cursor: pointer; list-style: none; display: flex; align-items: center; transition: background 0.2s, color 0.2s; }
+  .content-body .faq-question::-webkit-details-marker { display: none; }
+  .content-body .faq-question::before { content: "›"; display: inline-block; font-size: 1.5rem; line-height: 1; margin-right: 0.85rem; transition: transform 0.3s ease; color: inherit; }
+  .content-body .faq-item[open] .faq-question { background: #f0f9ff; color: #0369a1; }
+  html.dark .content-body .faq-item[open] .faq-question { background: rgba(14, 165, 233, 0.1); color: #38bdf8; }
+  .content-body .faq-item[open] .faq-question::before { transform: rotate(90deg); }
+  .content-body .faq-answer { padding: 1.25rem; color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; background: var(--bg-main); border-top: 1px solid var(--border-color); }
+  .content-body .faq-answer p:last-child { margin-bottom: 0; }
+
+  /* --- SHARE AND COMMENTS --- */
+  .post-share-section { margin-top: 2rem; padding-top: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  .share-label { font-weight: 600; color: var(--text-main); font-size: 0.9rem; }
+  .share-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; width: 100%; }
+  .share-btn { display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.45rem 0.9rem; border-radius: 0.375rem; font-size: 0.8rem; font-weight: 600; text-decoration: none; cursor: pointer; border: 1px solid transparent; transition: opacity 0.15s ease; }
+  .share-btn:hover { opacity: 0.9; }
+  .share-btn.facebook { background: #2563eb; color: #ffffff !important; }
+  .share-btn.whatsapp { background: #0d9488; color: #ffffff !important; }
+  .share-btn.twitter { background: #09090b; color: #ffffff !important; }
+  .share-btn.copy-link { background: var(--bg-main); color: var(--text-main); border-color: var(--border-color); }
+  .share-btn.copy-link:hover { background: var(--border-color); }
+
+  /* --- COMMENTS SECTION & LAZY BUTTON --- */
+  .comments-section { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color); }
+  .comments-title { font-size: 1.15rem; font-weight: 600; color: var(--text-main); margin-bottom: 1.25rem; }
+  
+  .load-comments-btn {
+    width: 100%;
+    display: block;
+    padding: 0.85rem;
+    background: var(--bg-main);
+    border: 1px dashed var(--border-color);
+    color: var(--text-main);
+    font-weight: 600;
+    font-size: 0.95rem;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    margin-bottom: 1rem;
+  }
+  
+  .load-comments-btn:hover {
+    background: var(--sidebar-hover);
+    border-color: #4f46e5;
+    color: #4f46e5;
+  }
+  
+  html.dark .load-comments-btn:hover {
+    color: #818cf8;
+  }
+
+  /* --- RESPONSIVENESS & MOBILE EDGE-TO-EDGE --- */
+  @media (max-width: 1024px) {
+    .blog-post-layout { grid-template-columns: 1fr; }
+    .sidebar-feed { display: none; }
+  }
+
+  @media (max-width: 768px) {
+    .post-page-wrapper { padding: 0; }
+    .post-card { padding: 1.25rem 1rem; border: none; border-radius: 0; box-shadow: none; background: transparent; }
+    .post-title { font-size: 1.5rem; margin-top: 0; }
+    
+    .post-meta {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 1rem;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .google-add-btn {
+      width: auto;
+      display: flex;
+      justify-content: center;
+      box-sizing: border-box;
+    }
+    
+    .content-body { font-size: 0.95rem; }
+    .content-body img, .content-body p img, .content-body figure img { margin: 1rem 0 !important; }
+    .content-body table { display: block; overflow-x: auto; white-space: nowrap; }
+    .post-share-section { flex-direction: column; align-items: flex-start; gap: 0.75rem; }
+    .share-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+  }
+  @media (max-width: 480px) {
+    .post-card { padding: 1rem 0.5rem; }
+    .post-title { font-size: 1.4rem; }
+    .share-buttons { grid-template-columns: 1fr; }
+  }
+</style>
