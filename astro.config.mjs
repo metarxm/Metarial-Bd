@@ -9,7 +9,8 @@ import { defineConfig, sharpImageService } from "astro/config";
 
 // https://astro.build/config
 export default defineConfig({
-  site: "https://coshix.in",
+  site: "https://metarxm.github.io",
+  base: "/Metarial-Bd",
   trailingSlash: "always", // Forces the trailing slash to match GitHub Pages
   image: { service: sharpImageService() },
   vite: { plugins: [tailwindcss()] },
